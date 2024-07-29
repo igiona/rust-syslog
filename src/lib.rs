@@ -54,6 +54,7 @@
 extern crate log;
 extern crate time;
 
+use std::collections::HashMap;
 use std::env;
 use std::fmt::{self, Arguments};
 use std::io::{self, BufWriter, Write};
@@ -64,7 +65,7 @@ use std::path::Path;
 use std::process;
 use std::sync::{Arc, Mutex};
 
-use log::{Level, Log, Metadata, Record};
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 mod errors;
 mod facility;
@@ -330,20 +331,52 @@ pub fn tcp<T: ToSocketAddrs, F>(formatter: F, server: T) -> Result<Logger<Logger
 
 pub struct BasicLogger {
     logger: Arc<Mutex<Logger<LoggerBackend, Formatter3164>>>,
+    module_levels: Vec<(String, LevelFilter)>,
 }
 
 impl BasicLogger {
     pub fn new(logger: Logger<LoggerBackend, Formatter3164>) -> BasicLogger {
         BasicLogger {
             logger: Arc::new(Mutex::new(logger)),
+            module_levels: Vec::new(),
         }
+    }
+
+    pub fn with_module_level(mut self, target: &str, level: LevelFilter) -> BasicLogger {
+        self.module_levels.push((target.to_string(), level));
+
+        self.module_levels
+            .sort_by_key(|(name, _level)| name.len().wrapping_neg());
+
+        self
+    }
+
+    pub fn with_filters(mut self, filters: &HashMap<&str, LevelFilter>) -> BasicLogger {
+        for (target, level) in filters {
+            self.module_levels.push((target.to_string(), *level));
+        }
+        self.module_levels
+            .sort_by_key(|(name, _level)| name.len().wrapping_neg());
+
+        self
     }
 }
 
 #[allow(unused_variables, unused_must_use)]
 impl Log for BasicLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= log::max_level() && metadata.level() <= log::STATIC_MAX_LEVEL
+        metadata.level() <= log::max_level()
+            && metadata.level() <= log::STATIC_MAX_LEVEL
+            && &metadata.level().to_level_filter()
+                <= self
+                    .module_levels
+                    .iter()
+                    /* At this point the Vec is already sorted so that we can simply take
+                     * the first match
+                     */
+                    .find(|(name, _level)| metadata.target().starts_with(name))
+                    .map(|(_name, level)| level)
+                    .unwrap_or(&LevelFilter::Trace)
     }
 
     fn log(&self, record: &Record) {
